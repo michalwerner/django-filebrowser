@@ -1,33 +1,30 @@
 # coding: utf-8
 
-# PYTHON IMPORTS
-import os
-import re
-from time import gmtime
-
-# DJANGO IMPORTS
-from django.template import Library, Node, Variable, VariableDoesNotExist, TemplateSyntaxError
 from django.conf import settings
 from django.core.files import File
+from django.template import Library, Node, Variable, VariableDoesNotExist, TemplateSyntaxError
 
-
-# FILEBROWSER IMPORTS
 from filebrowser.settings import VERSIONS, PLACEHOLDER, SHOW_PLACEHOLDER, FORCE_PLACEHOLDER
 from filebrowser.base import FileObject
 from filebrowser.sites import get_default_site
+
+
 register = Library()
 
 
 class VersionNode(Node):
-    def __init__(self, src, suffix):
+    def __init__(self, src, suffix, var_name):
         self.src = src
         self.suffix = suffix
+        self.var_name = var_name
 
     def render(self, context):
         try:
             version_suffix = self.suffix.resolve(context)
             source = self.src.resolve(context)
         except VariableDoesNotExist:
+            if self.var_name:
+                return None
             return ""
         if version_suffix not in VERSIONS:
             return ""  # FIXME: should this throw an error?
@@ -43,10 +40,15 @@ class VersionNode(Node):
         fileobject = FileObject(source, site=site)
         try:
             version = fileobject.version_generate(version_suffix)
-            return version.url
-        except Exception as e:
+            if self.var_name:
+                context[self.var_name] = version
+            else:
+                return version.url
+        except Exception:
             if settings.TEMPLATE_DEBUG:
-                raise e
+                raise
+            if self.var_name:
+                context[self.var_name] = ""
         return ""
 
 
@@ -58,12 +60,24 @@ def version(parser, token):
     Use {% version fileobject 'medium' %} in order to
     display the medium-size version of an image.
     version_suffix can be a string or a variable. if version_suffix is a string, use quotes.
+
+    Return a context variable 'var_name' with the FileObject
+    {% version fileobject version_suffix as var_name %}
+
+    Use {% version_object fileobject 'medium' as version_medium %} in order to
+    retrieve the medium version of an image stored in a variable version_medium.
+    version_suffix can be a string or a variable. If version_suffix is a string, use quotes.
     """
 
     bits = token.split_contents()
-    if len(bits) != 3:
-        raise TemplateSyntaxError("'version' tag takes 4 arguments")
-    return VersionNode(parser.compile_filter(bits[1]), parser.compile_filter(bits[2]))
+    if len(bits) != 3 and len(bits) != 5:
+        raise TemplateSyntaxError("'version' tag takes 2 or 4 arguments")
+    if len(bits) == 5 and bits[3] != 'as':
+        raise TemplateSyntaxError("second argument to 'version_object' tag must be 'as'")
+    if len(bits) == 3:
+        return VersionNode(parser.compile_filter(bits[1]), parser.compile_filter(bits[2]), None)
+    if len(bits) == 5:
+        return VersionNode(parser.compile_filter(bits[1]), parser.compile_filter(bits[2]), bits[4])
 
 
 class VersionObjectNode(Node):
@@ -93,9 +107,9 @@ class VersionObjectNode(Node):
         try:
             version = fileobject.version_generate(version_suffix)
             context[self.var_name] = version
-        except Exception as e:
+        except Exception:
             if settings.TEMPLATE_DEBUG:
-                raise e
+                raise
             context[self.var_name] = ""
         return ""
 
@@ -150,7 +164,6 @@ def version_setting(parser, token):
     if (version_suffix[0] == version_suffix[-1] and version_suffix[0] in ('"', "'")) and version_suffix.lower()[1:-1] not in VERSIONS:
         raise TemplateSyntaxError("%s tag received bad version_suffix %s" % (tag, version_suffix))
     return VersionSettingNode(version_suffix)
-
 
 register.tag(version)
 register.tag(version_object)
